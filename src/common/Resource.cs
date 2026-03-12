@@ -38,6 +38,19 @@ public interface IResource
 {
     string SingularName { get; }
     string PluralName { get; }
+
+    public string ConfigurationKey =>
+        // By default, use the plural name in camelCase as the configuration key.
+        new([.. PluralName.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                          .SelectMany<string, char>((word, index) => word switch
+                          {
+                              // Lowercase the first character of the first word
+                              [var first, .. var rest] when index == 0 => [char.ToLowerInvariant(first), .. rest],
+                              // Uppercase the first character of subsequent words
+                              [var first, .. var rest] => [char.ToUpperInvariant(first), .. rest],
+                              _ => []
+                          })]);
+
 #pragma warning disable CA1056 // URI-like properties should not be strings. This is not a URI, but a path to a collection of resources.
     public string CollectionUriPath { get; }
 #pragma warning restore CA1056 // URI-like properties should not be strings
@@ -217,6 +230,20 @@ public sealed record ResourceKey
         Parents.Append(Resource, Name)
                .ToResourceId()
                .Trim('/');
+
+    public static ResourceKey From(IResource resource, ResourceName name) =>
+        From(resource, name, ParentChain.Empty);
+
+    public static ResourceKey From(IResource resource, ResourceName name, ParentChain parents) =>
+        new()
+        {
+            Resource = resource,
+            Name = name,
+            Parents = parents
+        };
+
+    public ParentChain AsParentChain() =>
+        Parents.Append(Resource, Name);
 }
 
 public static partial class ResourceModule
@@ -273,9 +300,58 @@ public static class ResourceExtensions
 
         if (resource is IPolicyResource)
         {
+            // Policies can reference named values in their content
             list.Add(NamedValueResource.Instance);
+
+            // Policies can reference policy fragments
+            if (resource is not PolicyFragmentResource)
+            {
+                list.Add(PolicyFragmentResource.Instance);
+            }
         }
 
         return [.. list];
     }
+}
+
+public static partial class ResourceModule
+{
+    /// <summary>
+    /// Transforms an absolute resource ID to a relative ID that is not tied to a specific service.
+    /// For example, "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg1/providers/Microsoft.ApiManagement/service/apimService1/loggers/azuremonitor"
+    /// becomes "/loggers/azuremonitor".
+    /// </summary>
+    internal static string SetAbsoluteToRelativeId(string absoluteResourceId)
+    {
+        if (string.IsNullOrWhiteSpace(absoluteResourceId))
+        {
+            return string.Empty;
+        }
+
+        const string delimiter = "Microsoft.ApiManagement/service/";
+        var delimiterIndex = absoluteResourceId.IndexOf(delimiter, StringComparison.OrdinalIgnoreCase);
+
+        if (delimiterIndex == -1)
+        {
+            return absoluteResourceId;
+        }
+
+        var startIndex = delimiterIndex + delimiter.Length;
+        var remainingPath = absoluteResourceId[startIndex..];
+        var pathSegments = remainingPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+
+        return pathSegments.Length < 2
+                ? absoluteResourceId
+                : $"/{string.Join('/', pathSegments.Skip(1))}";
+    }
+
+    /// <summary>
+    /// Link resources store the secondary resource name in the DTO.
+    /// </summary>
+    public static Option<ResourceName> GetSecondaryResourceName(this ILinkResource linkResource, JsonObject dto) =>
+        dto.GetJsonObjectProperty("properties")
+           .Bind(properties => properties.GetStringProperty(linkResource.DtoPropertyNameForLinkedResource))
+           .Map(name => name.Split('/').LastOrDefault())
+           .Bind(ResourceName.From)
+           .ToOption();
 }

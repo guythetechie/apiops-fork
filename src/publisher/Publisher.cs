@@ -4,8 +4,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,6 +23,7 @@ internal static class PublisherModule
         RelationshipsModule.ConfigureGetPreviousRelationships(builder);
         ResourceModule.ConfigureListResourcesToProcess(builder);
         ResourceModule.ConfigureIsResourceInFileSystem(builder);
+        ResourceModule.ConfigureGetDto(builder);
         ResourceModule.ConfigurePutResource(builder);
         ResourceModule.ConfigureDeleteResource(builder);
 
@@ -33,6 +36,7 @@ internal static class PublisherModule
         var getPreviousRelationships = provider.GetRequiredService<GetPreviousRelationships>();
         var listResourcesToProcess = provider.GetRequiredService<ListResourcesToProcess>();
         var isInFileSystem = provider.GetRequiredService<IsResourceInFileSystem>();
+        var getDto = provider.GetRequiredService<GetDto>();
         var putResource = provider.GetRequiredService<PutResource>();
         var deleteResource = provider.GetRequiredService<DeleteResource>();
         var activitySource = provider.GetRequiredService<ActivitySource>();
@@ -81,9 +85,7 @@ internal static class PublisherModule
             async ValueTask processPut()
             {
                 // Process predecessors first
-                var predecessors = currentRelationships.Predecessors
-                                                       .Find(resourceKey)
-                                                       .IfNone(() => []);
+                var predecessors = getPredecessors(resourceKey);
 
                 await predecessors.IterTaskParallel(async predecessor => await processResource(predecessor, resourceSet, currentRelationships, previousRelationships, cancellationToken),
                                                     maxDegreeOfParallelism: Option.None,
@@ -94,6 +96,54 @@ internal static class PublisherModule
                 {
                     await putResource(resourceKey, cancellationToken);
                 }
+            }
+
+            IAsyncEnumerable<ResourceKey> getPredecessors(ResourceKey resourceKey)
+            {
+                var predecessors = currentRelationships.Predecessors
+                                                       .Find(resourceKey)
+                                                       .IfNone(() => [])
+                                                       .ToAsyncEnumerable();
+
+                // For link resources, process deletions first.
+                // APIM doesn't support duplicates (same primary/secondary, different link name).
+                // If we don't, we run the risk of putting a link resource while its duplicate still exists.
+                if (resourceKey.Resource is ILinkResource linkResource)
+                {
+                    // Let's use product groups as an example. Assume our resource key is ProductGroupResource composed of product1 and group1.
+
+                    // First, look for the primary resource (product1)
+                    var currentPrimaryPredecessorOption =
+                       from currentPredecessors in currentRelationships.Predecessors.Find(resourceKey)
+                       from primaryPredecessor in currentPredecessors.Head(predecessor => predecessor.Resource == linkResource.Primary)
+                       select primaryPredecessor;
+
+                    // Then, look for the secondary resource (group1)
+                    var currentSecondaryPredecessorOption =
+                        from currentPredecessors in currentRelationships.Predecessors.Find(resourceKey)
+                        from secondaryPredecessor in currentPredecessors.Head(predecessor => predecessor.Resource == linkResource.Secondary)
+                        select secondaryPredecessor;
+
+                    // Now, find all product groups that were previously linked to product1 and group1.
+                    var previousLinkResourcesOption =
+                        from currentPrimaryPredecessor in currentPrimaryPredecessorOption
+                        from currentSecondaryPredecessor in currentSecondaryPredecessorOption
+                        from previousPrimarySuccessors in previousRelationships.Successors.Find(currentPrimaryPredecessor)
+                        from previousSecondarySuccessors in previousRelationships.Successors.Find(currentSecondaryPredecessor)
+                        select previousPrimarySuccessors
+                                .Concat(previousSecondarySuccessors)
+                                .Where(successor => successor.Resource == linkResource);
+
+                    // Filter out the ones still in the file system. Remaining ones are deletions.
+                    var deletions = previousLinkResourcesOption
+                                        .IfNone(() => [])
+                                        .ToAsyncEnumerable()
+                                        .Where(async (key, cancellationToken) => await isInFileSystem(key, cancellationToken) is false);
+
+                    predecessors = predecessors.Concat(deletions);
+                }
+
+                return predecessors;
             }
 
             async ValueTask processDelete()

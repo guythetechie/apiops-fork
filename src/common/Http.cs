@@ -227,6 +227,11 @@ public class CommonRetryPolicy : RetryPolicy
 
     private static bool ShouldRetryInner(HttpMessage message, Exception? exception)
     {
+        if (message.HasResponse is false)
+        {
+            return false;
+        }
+
         var response = message.Response;
         var errorCode = GetErrorCode(response).IfNone(() => string.Empty);
         var errorMessage = GetErrorMessage(response).IfNone(() => string.Empty);
@@ -277,7 +282,12 @@ public sealed class LoggingPolicy(ILogger logger) : HttpPipelinePolicy
 
     public override async ValueTask ProcessAsync(HttpMessage message, ReadOnlyMemory<HttpPipelinePolicy> pipeline)
     {
-        var requestContent = await GetRequestContent(message, logger, message.CancellationToken);
+        var logSensitiveData = logger.IsEnabled(LogLevel.Trace);
+
+        var requestContent = logSensitiveData
+                                ? await GetRequestContent(message, logger, message.CancellationToken)
+                                : "<redacted>";
+
         logger.LogDebug("""
                         Starting request
                         Method: {HttpMethod}
@@ -290,7 +300,10 @@ public sealed class LoggingPolicy(ILogger logger) : HttpPipelinePolicy
         var endTime = Stopwatch.GetTimestamp();
         var duration = TimeSpan.FromSeconds((endTime - startTime) / (double)Stopwatch.Frequency);
 
-        var responseContent = GetResponseContent(message, logger);
+        var responseContent = logSensitiveData
+                                ? GetResponseContent(message, logger)
+                                : "<redacted>";
+
         if (message.Response.IsError && message.Response.Status is not 429 && message.Response.Status is not 404)
         {
             logger.LogWarning("""                
@@ -376,7 +389,7 @@ public class TelemetryPolicy(Version version) : HttpPipelinePolicy
 
     public override async ValueTask ProcessAsync(HttpMessage message, ReadOnlyMemory<HttpPipelinePolicy> pipeline)
     {
-        var header = new ProductHeaderValue("apimanagement-apiops", version.ToString());
+        var header = new ProductHeaderValue("apimanagement-apiops", version.ToString(3));
         message.Request.Headers.Add(HttpHeader.Names.UserAgent, header.ToString());
 
         await ProcessNextAsync(message, pipeline);

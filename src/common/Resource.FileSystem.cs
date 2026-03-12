@@ -57,12 +57,7 @@ public static partial class ResourceModule
                 {
                     [] => Option.None,
                     [var single] => single,
-                    var many => throw new InvalidOperationException($"Found multiple matches for '{new ResourceKey
-                    {
-                        Name = name,
-                        Resource = resource,
-                        Parents = parents
-                    }}.")
+                    var many => throw new InvalidOperationException($"Found multiple matches for '{ResourceKey.From(resource, name, parents)}'.")
                 };
 
             async ValueTask<Option<JsonObject>> parseDirectory(DirectoryInfo directory)
@@ -133,12 +128,7 @@ public static partial class ResourceModule
             case IChildResource { Parent: var parent } childResource:
                 if (parent is not IResourceWithDirectory parentResourceWithDirectory)
                 {
-                    throw new InvalidOperationException($"Expected policy '{new ResourceKey
-                    {
-                        Name = name,
-                        Resource = resource,
-                        Parents = parents
-                    }} to have a parent of type {nameof(IResourceWithDirectory)}.");
+                    throw new InvalidOperationException($"Expected policy '{ResourceKey.From(resource, name, parents)}' to have a parent of type {nameof(IResourceWithDirectory)}.");
                 }
 
                 var parentParents = ParentChain.From(parents.SkipLast(1));
@@ -265,35 +255,6 @@ public static partial class ResourceModule
         return updatedDto.IfError(_ => dto);
     }
 
-    /// <summary>
-    /// Transforms an absolute resource ID to a relative ID that is not tied to a specific service.
-    /// For example, "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg1/providers/Microsoft.ApiManagement/service/apimService1/loggers/azuremonitor"
-    /// becomes "/loggers/azuremonitor".
-    /// </summary>
-    private static string SetAbsoluteToRelativeId(string absoluteResourceId)
-    {
-        if (string.IsNullOrWhiteSpace(absoluteResourceId))
-        {
-            return string.Empty;
-        }
-
-        const string delimiter = "Microsoft.ApiManagement/service/";
-        var delimiterIndex = absoluteResourceId.IndexOf(delimiter, StringComparison.OrdinalIgnoreCase);
-
-        if (delimiterIndex == -1)
-        {
-            return absoluteResourceId;
-        }
-
-        var startIndex = delimiterIndex + delimiter.Length;
-        var remainingPath = absoluteResourceId[startIndex..];
-        var pathSegments = remainingPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-
-        return pathSegments.Length < 2
-                ? absoluteResourceId
-                : $"/{string.Join('/', pathSegments.Skip(1))}";
-    }
-
     private static DirectoryInfo GetCollectionDirectoryInfo(this IResourceWithDirectory resource, ParentChain parents, ServiceDirectory serviceDirectory) =>
         parents.Aggregate(serviceDirectory.ToDirectoryInfo(),
                           (directory, parent) => parent.Resource switch
@@ -346,12 +307,7 @@ public static partial class ResourceModule
         {
             var matches = await graph.TopologicallySortedResources
                                      .Choose(async resource => from x in await parseResource(resource, file, readFile, cancellationToken)
-                                                               select new ResourceKey
-                                                               {
-                                                                   Resource = resource,
-                                                                   Name = x.Name,
-                                                                   Parents = x.Parents
-                                                               })
+                                                               select ResourceKey.From(resource, x.Name, x.Parents))
                                      .ToArrayAsync(cancellationToken);
 
             return matches switch

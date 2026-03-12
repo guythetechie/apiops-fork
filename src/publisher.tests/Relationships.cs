@@ -3,6 +3,7 @@ using common.tests;
 using CsCheck;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -585,6 +586,108 @@ internal sealed class GetRelationshipsTests
     }
 
     [Test]
+    public async Task Adds_relationship_between_api_and_api_operation_policy()
+    {
+        var gen = from apiKey in Generator.GenerateResourceKey(ApiResource.Instance)
+                  from operationKey in from operationName in Generator.ResourceName
+                                       select new ResourceKey
+                                       {
+                                           Resource = ApiOperationResource.Instance,
+                                           Name = operationName,
+                                           Parents = ParentChain.From([.. apiKey.Parents, (apiKey.Resource, apiKey.Name)])
+                                       }
+                  let policyKey = new ResourceKey
+                  {
+                      Resource = ApiOperationPolicyResource.Instance,
+                      Name = ResourceName.From("policy").IfErrorThrow(),
+                      Parents = ParentChain.From([.. operationKey.Parents, (operationKey.Resource, operationKey.Name)])
+                  }
+                  from fixture in Fixture.Generate()
+                  let policyFile = new FileInfo("operationPolicy.xml")
+                  let fileOperations = Common.NoOpFileOperations with
+                  {
+                      EnumerateServiceDirectoryFiles = () => [policyFile]
+                  }
+                  select (apiKey, policyKey, fileOperations, fixture with
+                  {
+                      IsValidationStrict = () => false,
+                      ParseResourceFile = async (file, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          return file.FullName == policyFile.FullName
+                                    ? policyKey
+                                    : Option.None;
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (apiKey, policyKey, fileOperations, fixture) = tuple;
+            var getRelationships = fixture.Resolve();
+
+            // Act
+            var relationships = await getRelationships(fileOperations, CancellationToken);
+
+            // Assert that the API is a predecessor of the policy
+            await Assert.That(relationships.Predecessors[policyKey])
+                        .Contains(apiKey);
+        });
+    }
+
+    [Test]
+    public async Task Adds_relationship_between_workspace_api_and_workspace_api_operation_policy()
+    {
+        var gen = from apiKey in Generator.GenerateResourceKey(WorkspaceApiResource.Instance)
+                  from operationKey in from operationName in Generator.ResourceName
+                                       select new ResourceKey
+                                       {
+                                           Resource = WorkspaceApiOperationResource.Instance,
+                                           Name = operationName,
+                                           Parents = ParentChain.From([.. apiKey.Parents, (apiKey.Resource, apiKey.Name)])
+                                       }
+                  let policyKey = new ResourceKey
+                  {
+                      Resource = WorkspaceApiOperationPolicyResource.Instance,
+                      Name = ResourceName.From("policy").IfErrorThrow(),
+                      Parents = ParentChain.From([.. operationKey.Parents, (operationKey.Resource, operationKey.Name)])
+                  }
+                  from fixture in Fixture.Generate()
+                  let policyFile = new FileInfo("operationPolicy.xml")
+                  let fileOperations = Common.NoOpFileOperations with
+                  {
+                      EnumerateServiceDirectoryFiles = () => [policyFile]
+                  }
+                  select (apiKey, policyKey, fileOperations, fixture with
+                  {
+                      IsValidationStrict = () => false,
+                      ParseResourceFile = async (file, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          return file.FullName == policyFile.FullName
+                                    ? policyKey
+                                    : Option.None;
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (apiKey, policyKey, fileOperations, fixture) = tuple;
+            var getRelationships = fixture.Resolve();
+
+            // Act
+            var relationships = await getRelationships(fileOperations, CancellationToken);
+
+            // Assert that the API is a predecessor of the policy
+            await Assert.That(relationships.Predecessors[policyKey])
+                        .Contains(apiKey);
+        });
+    }
+
+    [Test]
     public async Task Returns_primary_and_secondary_relationships_for_a_composite_resource()
     {
         var gen = from compositeKey in Generator.GenerateResourceKey(resource => resource is ICompositeResource)
@@ -641,12 +744,7 @@ internal sealed class GetRelationshipsTests
                       {
                           await ValueTask.CompletedTask;
 
-                          var resourceKey = new ResourceKey
-                          {
-                              Resource = resource,
-                              Name = name,
-                              Parents = parents
-                          };
+                          var resourceKey = ResourceKey.From(resource, name, parents);
 
                           return resourceKey == compositeKey
                                     ? dto
@@ -673,12 +771,232 @@ internal sealed class GetRelationshipsTests
     }
 
     [Test]
+    public async Task Returns_named_value_relationships_for_named_value_references()
+    {
+        var gen = from fixture in Fixture.Generate()
+                  from resourceKey in Generator.GenerateResourceKey(resource => resource is IResourceWithInformationFile
+                                                                                and not IResourceWithReference
+                                                                                and not ICompositeResource
+                                                                                and not IPolicyResource)
+                  from namedValueName in Generator.ResourceName
+                  let namedValueKey = ResourceKey.From(NamedValueResource.Instance, namedValueName)
+                  let resourceFile = new FileInfo("resource.json")
+                  let namedValueFile = new FileInfo("namedValue.json")
+                  let fileOperations = Common.NoOpFileOperations with
+                  {
+                      EnumerateServiceDirectoryFiles = () => [resourceFile, namedValueFile]
+                  }
+                  let dto = new JsonObject
+                  {
+                      ["properties"] = new JsonObject
+                      {
+                          ["description"] = $"uses {{{{{namedValueName}}}}}"
+                      }
+                  }
+                  let namedValueDto = new JsonObject
+                  {
+                      ["properties"] = new JsonObject
+                      {
+                          ["displayName"] = namedValueName.ToString()
+                      }
+                  }
+                  select (namedValueKey, resourceKey, fileOperations, fixture with
+                  {
+                      IsValidationStrict = () => false,
+                      ParseResourceFile = async (file, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          if (file.FullName == resourceFile.FullName)
+                          {
+                              return resourceKey;
+                          }
+
+                          if (file.FullName == namedValueFile.FullName)
+                          {
+                              return namedValueKey;
+                          }
+
+                          return Option.None;
+                      },
+                      GetInformationFileDto = async (resource, name, parents, readFile, getSubDirectories, cancellationToken) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          var key = ResourceKey.From(resource, name, parents);
+
+                          return key == resourceKey
+                                    ? dto
+                                    : key == namedValueKey
+                                        ? namedValueDto
+                                        : Option.None;
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (namedValueKey, resourceKey, fileOperations, fixture) = tuple;
+            var getRelationships = fixture.Resolve();
+
+            // Act
+            var relationships = await getRelationships(fileOperations, CancellationToken);
+
+            // Assert
+            await Assert.That(relationships.Predecessors[resourceKey])
+                        .Contains(namedValueKey);
+        });
+    }
+
+    [Test]
+    public async Task Returns_policy_to_named_value_relationships()
+    {
+        var gen = from fixture in Fixture.Generate()
+                  from namedValueKey in Generator.GenerateResourceKey(NamedValueResource.Instance)
+                  from policyKey in Generator.GenerateResourceKey(resource => resource is IPolicyResource
+                                                                                 and not PolicyFragmentResource
+                                                                                 and not WorkspacePolicyFragmentResource)
+                  let policyContent = $"<policies><inbound><set-header name=\"x\" exists-action=\"override\"><value>{{{{{namedValueKey.Name}}}}}</value></set-header><base /></inbound></policies>"
+                  let namedValueDto = new JsonObject
+                  {
+                      ["properties"] = new JsonObject
+                      {
+                          ["displayName"] = namedValueKey.Name.ToString()
+                      }
+                  }
+                  let policyFile = new FileInfo("policy.xml")
+                  let namedValueFile = new FileInfo("namedValue.json")
+                  let fileOperations = Common.NoOpFileOperations with
+                  {
+                      EnumerateServiceDirectoryFiles = () => [policyFile, namedValueFile]
+                  }
+                  select (namedValueKey, policyKey, policyContent, fileOperations, fixture with
+                  {
+                      IsValidationStrict = () => false,
+                      ParseResourceFile = async (file, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          if (file.FullName == policyFile.FullName)
+                          {
+                              return policyKey;
+                          }
+
+                          if (file.FullName == namedValueFile.FullName)
+                          {
+                              return namedValueKey;
+                          }
+
+                          return Option.None;
+                      },
+                      GetPolicyFileContents = async (resource, name, parents, readFile, cancellationToken) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          var key = ResourceKey.From(resource, name, parents);
+
+                          return key == policyKey
+                                    ? BinaryData.FromString(policyContent)
+                                    : Option.None;
+                      },
+                      GetInformationFileDto = async (resource, name, parents, readFile, getSubDirectories, cancellationToken) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          var key = ResourceKey.From(resource, name, parents);
+
+                          return key == namedValueKey
+                                    ? namedValueDto
+                                    : Option.None;
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (namedValueKey, policyKey, policyContent, fileOperations, fixture) = tuple;
+            var getRelationships = fixture.Resolve();
+
+            // Act
+            var relationships = await getRelationships(fileOperations, CancellationToken);
+
+            // Assert that the named value is a predecessor of the policy
+            await Assert.That(relationships.Predecessors[policyKey])
+                        .Contains(namedValueKey);
+        });
+    }
+
+    [Test]
+    public async Task Returns_policy_to_policy_fragment_relationships()
+    {
+        var gen = from fixture in Fixture.Generate()
+                  from fragmentKey in Generator.GenerateResourceKey(PolicyFragmentResource.Instance)
+                  from policyKey in Generator.GenerateResourceKey(resource => resource is IPolicyResource
+                                                                                 and not PolicyFragmentResource
+                                                                                 and not WorkspacePolicyFragmentResource)
+                  let policyContent = $"<policies><inbound><include-fragment fragment-id=\"{fragmentKey.Name}\" /><base /></inbound></policies>"
+                  let policyFile = new FileInfo("policy.xml")
+                  let fragmentFile = new FileInfo("fragment.json")
+                  let fileOperations = Common.NoOpFileOperations with
+                  {
+                      EnumerateServiceDirectoryFiles = () => [policyFile, fragmentFile]
+                  }
+                  select (fragmentKey, policyKey, policyContent, fileOperations, fixture with
+                  {
+                      IsValidationStrict = () => false,
+                      ParseResourceFile = async (file, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          if (file.FullName == policyFile.FullName)
+                          {
+                              return policyKey;
+                          }
+
+                          if (file.FullName == fragmentFile.FullName)
+                          {
+                              return fragmentKey;
+                          }
+
+                          return Option.None;
+                      },
+                      GetPolicyFileContents = async (resource, name, parents, readFile, cancellationToken) =>
+                      {
+                          await ValueTask.CompletedTask;
+
+                          var key = ResourceKey.From(resource, name, parents);
+
+                          return key == policyKey
+                                    ? BinaryData.FromString(policyContent)
+                                    : Option.None;
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (fragmentKey, policyKey, policyContent, fileOperations, fixture) = tuple;
+            var getRelationships = fixture.Resolve();
+
+            // Act
+            var relationships = await getRelationships(fileOperations, CancellationToken);
+
+            // Assert that the policy fragment is a predecessor of the policy
+            await Assert.That(relationships.Predecessors[policyKey])
+                        .Contains(fragmentKey);
+        });
+    }
+
+    [Test]
     public async Task Throws_when_a_predecessor_is_missing_and_validation_is_strict()
     {
         var gen = from childKey in Generator.GenerateResourceKey(resource => resource is IChildResource
                                                                                 and not IResourceWithReference
                                                                                 and not ICompositeResource
                                                                                 and not IPolicyResource)
+                  // Skip parents that should not be validated
+                  let parentResource = childKey.Parents.Last().Resource
+                  where parentResource is not (GroupResource or ApiOperationResource or WorkspaceResource or WorkspaceGroupResource or WorkspaceApiOperationResource)
                   from fixture in Fixture.Generate()
                   let childFile = new FileInfo("child.json")
                   let fileOperations = Common.NoOpFileOperations with
@@ -773,6 +1091,7 @@ internal sealed class GetRelationshipsTests
         public required ParseResourceFile ParseResourceFile { get; init; }
         public required GetInformationFileDto GetInformationFileDto { get; init; }
         public required GetPolicyFileContents GetPolicyFileContents { get; init; }
+        public required GetConfigurationOverride GetConfigurationOverride { get; init; }
         public required IsValidationStrict IsValidationStrict { get; init; }
 
         public GetRelationships Resolve()
@@ -782,7 +1101,9 @@ internal sealed class GetRelationshipsTests
             services.AddSingleton(ParseResourceFile)
                     .AddSingleton(GetInformationFileDto)
                     .AddSingleton(GetPolicyFileContents)
+                    .AddSingleton(GetConfigurationOverride)
                     .AddSingleton(IsValidationStrict)
+                    .AddTestActivitySource()
                     .AddNullLogger();
 
             using var provider = services.BuildServiceProvider();
@@ -808,6 +1129,11 @@ internal sealed class GetRelationshipsTests
                 {
                     await ValueTask.CompletedTask;
                     return Option<BinaryData>.None();
+                },
+                GetConfigurationOverride = async (_, _) =>
+                {
+                    await ValueTask.CompletedTask;
+                    return Option<JsonObject>.None();
                 },
                 IsValidationStrict = () => isStrict,
             };

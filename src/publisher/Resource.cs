@@ -170,7 +170,8 @@ internal static partial class ResourceModule
         ConfigureGetDto(builder);
         ConfigurePutApi(builder);
         ConfigurePutWorkspaceApi(builder);
-
+        ConfigurePutNamedValue(builder);
+        CommonModule.ConfigureIsDryRun(builder);
         common.ResourceModule.ConfigurePutResourceInApim(builder);
 
         builder.TryAddSingleton(ResolvePutResource);
@@ -181,7 +182,9 @@ internal static partial class ResourceModule
         var getDto = provider.GetRequiredService<GetDto>();
         var putApi = provider.GetRequiredService<PutApi>();
         var putWorkspaceApi = provider.GetRequiredService<PutWorkspaceApi>();
+        var putNamedValue = provider.GetRequiredService<PutNamedValue>();
         var putResourceInApim = provider.GetRequiredService<PutResourceInApim>();
+        var isDryRun = provider.GetRequiredService<IsDryRun>();
         var activitySource = provider.GetRequiredService<ActivitySource>();
         var logger = provider.GetRequiredService<ILogger>();
 
@@ -206,6 +209,11 @@ internal static partial class ResourceModule
                                   {
                                       logger.LogInformation("Putting {ResourceKey}...", resourceKey);
 
+                                      if (isDryRun())
+                                      {
+                                          return;
+                                      }
+
                                       await putDtoResource(resourceWithDto, name, dto, parents, cancellationToken);
                                   },
                                   async () =>
@@ -221,11 +229,12 @@ internal static partial class ResourceModule
             {
                 ApiResource => putApi(name, dto, cancellationToken),
                 WorkspaceApiResource => putWorkspaceApi(name, parents, dto, cancellationToken),
+                NamedValueResource or WorkspaceNamedValueResource => putNamedValue(ResourceKey.From(resource, name, parents), dto, cancellationToken),
                 _ => putResourceInApim(resource, name, dto, parents, cancellationToken)
             });
     }
 
-    private static void ConfigureGetDto(IHostApplicationBuilder builder)
+    internal static void ConfigureGetDto(IHostApplicationBuilder builder)
     {
         GitModule.ConfigureCommitIdWasPassed(builder);
         GitModule.ConfigureGetCurrentCommitFileOperations(builder);
@@ -254,12 +263,7 @@ internal static partial class ResourceModule
 
         return async (resource, name, parents, cancellationToken) =>
         {
-            var resourceKey = new ResourceKey
-            {
-                Resource = resource,
-                Name = name,
-                Parents = parents
-            };
+            var resourceKey = ResourceKey.From(resource, name, parents);
 
             using var _ = activitySource.StartActivity("get.dto")
                                        ?.SetTag("resourceKey", resourceKey);
@@ -365,6 +369,7 @@ internal static partial class ResourceModule
         common.ResourceModule.ConfigureDeleteResourceFromApim(builder);
         ConfigureDeleteApi(builder);
         ConfigureDeleteWorkspaceApi(builder);
+        CommonModule.ConfigureIsDryRun(builder);
 
         builder.TryAddSingleton(ResolveDeleteResource);
     }
@@ -374,6 +379,7 @@ internal static partial class ResourceModule
         var deleteResourceFromApim = provider.GetRequiredService<DeleteResourceFromApim>();
         var deleteApi = provider.GetRequiredService<DeleteApi>();
         var deleteWorkspaceApi = provider.GetRequiredService<DeleteWorkspaceApi>();
+        var isDryRun = provider.GetRequiredService<IsDryRun>();
         var activitySource = provider.GetRequiredService<ActivitySource>();
         var logger = provider.GetRequiredService<ILogger>();
 
@@ -383,6 +389,11 @@ internal static partial class ResourceModule
                                        ?.SetTag("resourceKey", resourceKey);
 
             logger.LogInformation("Deleting {ResourceKey}...", resourceKey);
+
+            if (isDryRun())
+            {
+                return;
+            }
 
             await (resourceKey.Resource switch
             {

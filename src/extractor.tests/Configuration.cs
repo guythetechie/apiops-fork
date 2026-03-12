@@ -22,7 +22,7 @@ internal sealed class ResourceIsInConfigurationTests
     {
         var gen = // Generate configuration keys
                   from fixture in Fixture.Generate()
-                  from keys in GenerateResourceKeys()
+                  from keys in Generator.ResourceKeys
                   let configuration = ResourceKeysToConfiguration(keys)
                   // Generate a key whose resource is not in configuration
                   from key in Generator.ResourceKey
@@ -53,7 +53,7 @@ internal sealed class ResourceIsInConfigurationTests
         var gen =
             // Generate configuration keys
             from fixture in Fixture.Generate()
-            from keys in GenerateResourceKeys()
+            from keys in Generator.ResourceKeys
             let configuration = ResourceKeysToConfiguration(keys)
             // Pick a key with a parent
             let keysWithParents = keys.Where(key => key.Parents.Count > 0).ToImmutableArray()
@@ -93,17 +93,13 @@ internal sealed class ResourceIsInConfigurationTests
         });
     }
 
-    private static Gen<ImmutableHashSet<ResourceKey>> GenerateResourceKeys() =>
-        from resourceKeys in Generator.ResourceDtos
-        select resourceKeys.Keys.ToImmutableHashSet();
-
     [Test]
     public async Task Key_with_existing_resource_and_missing_name_returns_false()
     {
         var gen =
             // Generate configuration keys
             from fixture in Fixture.Generate()
-            from keys in GenerateResourceKeys()
+            from keys in Generator.ResourceKeys
             let configuration = ResourceKeysToConfiguration(keys)
             // Pick a key and change its name to one that doesn't exist in configuration
             where keys.Count > 0
@@ -139,8 +135,7 @@ internal sealed class ResourceIsInConfigurationTests
     /// The key and its parents do not contain any API or workspace API revisions.
     /// </summary>
     private static bool HasNoRevisionsInPath(ResourceKey key) =>
-        key.Parents
-           .Append(key.Resource, key.Name)
+        key.AsParentChain()
            .All(tuple => tuple.Resource is not (ApiResource or WorkspaceApiResource)
                          || ApiRevisionModule.IsRootName(tuple.Name));
 
@@ -150,7 +145,7 @@ internal sealed class ResourceIsInConfigurationTests
         var gen =
             // Generate configuration keys
             from fixture in Fixture.Generate()
-            from keys in GenerateResourceKeys()
+            from keys in Generator.ResourceKeys
             let configuration = ResourceKeysToConfiguration(keys)
             // Pick an existing key
             where keys.Count > 0
@@ -186,7 +181,7 @@ internal sealed class ResourceIsInConfigurationTests
             // Generate configuration keys, ensuring that there are no API revisions
             from fixture in Fixture.Generate()
             from keys in
-                from keys in GenerateResourceKeys()
+                from keys in Generator.ResourceKeys
                 select keys.Where(HasNoRevisionsInPath)
                            .ToImmutableHashSet()
             let configuration = ResourceKeysToConfiguration(keys)
@@ -194,12 +189,11 @@ internal sealed class ResourceIsInConfigurationTests
             where keys.Count > 0
             from existingKey in Gen.OneOfConst([.. keys])
                 // Ensure that the key has an API in its path
-            where existingKey.Parents
-                             .Append(existingKey.Resource, existingKey.Name)
+            where existingKey.AsParentChain()
                              .Any(tuple => tuple.Resource is ApiResource or WorkspaceApiResource)
             // Change the API or workspace API name to a revisioned name
             from key in
-                from segments in Generator.Traverse(existingKey.Parents.Append((existingKey.Resource, existingKey.Name)),
+                from segments in Generator.Traverse(existingKey.AsParentChain(),
                                                     tuple => tuple.Resource is (ApiResource or WorkspaceApiResource)
                                                                 ? from revision in Gen.Int[1, 100]
                                                                   let newName = ApiRevisionModule.Combine(tuple.Name, revision)
@@ -247,7 +241,7 @@ internal sealed class ResourceIsInConfigurationTests
 
         JsonNode getResourceKeyJson(ResourceKey resourceKey)
         {
-            var successors = resourceKeys.Where(potentialSuccessor => potentialSuccessor.Parents == resourceKey.Parents.Append(resourceKey.Resource, resourceKey.Name));
+            var successors = resourceKeys.Where(potentialSuccessor => potentialSuccessor.Parents == resourceKey.AsParentChain());
 
             return successors.ToImmutableArray() switch
             {
@@ -262,7 +256,7 @@ internal sealed class ResourceIsInConfigurationTests
         JsonObject getResourceKeysJson(IEnumerable<ResourceKey> resourceKeys) =>
             resourceKeys.GroupBy(key => key.Resource)
                         .Aggregate(new JsonObject(),
-                                   (jsonObject, group) => jsonObject.SetProperty(group.Key.PluralName,
+                                   (jsonObject, group) => jsonObject.SetProperty(group.Key.ConfigurationKey,
                                                                                  new JsonArray([.. group.Select(getResourceKeyJson)])));
     }
 

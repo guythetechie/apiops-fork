@@ -60,7 +60,7 @@ internal static class ConfigurationModule
             // - If the parent chain is workspace2/api2, the diagnostic resource names would be Some["diagnostic1", "diagnostic2"].
             // - If the parent chain is workspace2/api3, the diagnostic resource names would be None.
             var result = from parentsJson in await getParentsJsonObject(parents, cancellationToken)
-                         from resourceNodes in parentsJson.GetJsonArrayProperty(resource.PluralName).ToOption()
+                                 from resourceNodes in parentsJson.GetJsonArrayProperty(resource.ConfigurationKey).ToOption()
                          let names = resourceNodes.Choose(getResourceName)
                          select names.Contains(name)
                             // For APIs, include all revisions if the root API name is in configuration
@@ -125,7 +125,7 @@ internal static class ConfigurationModule
         //         - api2
         static Option<JsonObject> getParentJsonObject(IResource resource, ResourceName resourceName, JsonObject jsonObject) =>
             // Using our configuration example, for workspaces, we'd get Some[JsonArray]. For products, we'd get None.
-            from resourceJson in jsonObject.GetJsonArrayProperty(resource.PluralName).ToOption()
+            from resourceJson in jsonObject.GetJsonArrayProperty(resource.ConfigurationKey).ToOption()
             let parents = resourceJson.Choose(node => // For workspace1, we'd get None (it's not a JSON object). For workspace2, we'd get Some[JsonObject].
                                                       from parentJsonObject in node.AsJsonObject().ToOption()
                                                           // Find the specific parent configuration by name

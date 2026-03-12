@@ -413,6 +413,7 @@ internal sealed class PutResourceTests
                   from fixture in Fixture.Generate()
                   select (resourceKey, putCalls, fixture with
                   {
+                      IsDryRun = () => false,
                       GetDto = async (_, _, _, _) =>
                       {
                           await ValueTask.CompletedTask;
@@ -424,6 +425,11 @@ internal sealed class PutResourceTests
                           putCalls.Add(0);
                       },
                       PutWorkspaceApi = async (_, _, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putCalls.Add(0);
+                      },
+                      PutNamedValue = async (_, _, _) =>
                       {
                           await ValueTask.CompletedTask;
                           putCalls.Add(0);
@@ -458,6 +464,7 @@ internal sealed class PutResourceTests
                   from fixture in Fixture.Generate()
                   select (resourceKey, putCalls, fixture with
                   {
+                      IsDryRun = () => false,
                       GetDto = async (_, _, _, _) =>
                       {
                           await ValueTask.CompletedTask;
@@ -469,6 +476,11 @@ internal sealed class PutResourceTests
                           putCalls.Add(0);
                       },
                       PutWorkspaceApi = async (_, _, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putCalls.Add(0);
+                      },
+                      PutNamedValue = async (_, _, _) =>
                       {
                           await ValueTask.CompletedTask;
                           putCalls.Add(0);
@@ -502,10 +514,12 @@ internal sealed class PutResourceTests
                   from dto in Generator.JsonObject
                   let putApis = new ConcurrentBag<(ResourceName Name, JsonObject Dto)>()
                   let putWorkspaceApis = new ConcurrentBag<(ResourceName Name, ParentChain ParentChain, JsonObject Dto)>()
+                  let putNamedValues = new ConcurrentBag<(ResourceKey Key, JsonObject Dto)>()
                   let putOthers = new ConcurrentBag<(ResourceKey Key, JsonObject Dto)>()
                   from fixture in Fixture.Generate()
-                  select (resourceKey, dto, putApis, putWorkspaceApis, putOthers, fixture with
+                  select (resourceKey, dto, putApis, putWorkspaceApis, putNamedValues, putOthers, fixture with
                   {
+                      IsDryRun = () => false,
                       GetDto = async (_, _, _, _) =>
                       {
                           await ValueTask.CompletedTask;
@@ -521,15 +535,15 @@ internal sealed class PutResourceTests
                           await ValueTask.CompletedTask;
                           putWorkspaceApis.Add((name, parentChain, dto));
                       },
+                      PutNamedValue = async (key, dto, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putNamedValues.Add((key, dto));
+                      },
                       PutResourceInApim = async (resource, name, dto, parents, _) =>
                       {
                           await ValueTask.CompletedTask;
-                          var key = new ResourceKey
-                          {
-                              Resource = resource,
-                              Name = name,
-                              Parents = parents
-                          };
+                          var key = ResourceKey.From(resource, name, parents);
                           putOthers.Add((key, dto));
                       }
                   });
@@ -537,7 +551,7 @@ internal sealed class PutResourceTests
         await gen.SampleAsync(async tuple =>
         {
             // Arrange
-            var (resourceKey, dto, putApis, putWorkspaceApis, putOthers, fixture) = tuple;
+            var (resourceKey, dto, putApis, putWorkspaceApis, putNamedValues, putOthers, fixture) = tuple;
             var putResource = fixture.Resolve();
 
             // Act
@@ -554,6 +568,10 @@ internal sealed class PutResourceTests
                     await Assert.That(putWorkspaceApis)
                                 .Contains((resourceKey.Name, resourceKey.Parents, dto));
                     break;
+                case NamedValueResource or WorkspaceNamedValueResource:
+                    await Assert.That(putNamedValues)
+                                .Contains((resourceKey, dto));
+                    break;
                 default:
                     await Assert.That(putOthers)
                                 .Contains((resourceKey, dto));
@@ -562,20 +580,76 @@ internal sealed class PutResourceTests
         });
     }
 
+    [Test]
+    public async Task Resources_are_not_put_in_dry_run()
+    {
+        var gen = from resourceKey in Generator.GenerateResourceKey(resource => resource is IResourceWithDto)
+                  from dto in Generator.JsonObject
+                  let putCalls = new ConcurrentBag<byte>()
+                  from fixture in Fixture.Generate()
+                  select (resourceKey, putCalls, fixture with
+                  {
+                      IsDryRun = () => true,
+                      GetDto = async (_, _, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          return dto;
+                      },
+                      PutApi = async (_, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putCalls.Add(0);
+                      },
+                      PutWorkspaceApi = async (_, _, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putCalls.Add(0);
+                      },
+                      PutNamedValue = async (_, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putCalls.Add(0);
+                      },
+                      PutResourceInApim = async (_, _, _, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          putCalls.Add(0);
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (resourceKey, putCalls, fixture) = tuple;
+            var putResource = fixture.Resolve();
+
+            // Act
+            await putResource(resourceKey, CancellationToken);
+
+            // Assert that no put methods were called
+            await Assert.That(putCalls)
+                        .IsEmpty();
+        });
+    }
+
     private sealed record Fixture
     {
+        public required IsDryRun IsDryRun { get; init; }
         public required GetDto GetDto { get; init; }
         public required PutApi PutApi { get; init; }
         public required PutWorkspaceApi PutWorkspaceApi { get; init; }
+        public required PutNamedValue PutNamedValue { get; init; }
         public required PutResourceInApim PutResourceInApim { get; init; }
 
         public PutResource Resolve()
         {
             var services = new ServiceCollection();
 
-            services.AddSingleton(GetDto)
+            services.AddSingleton(IsDryRun)
+                    .AddSingleton(GetDto)
                     .AddSingleton(PutApi)
                     .AddSingleton(PutWorkspaceApi)
+                    .AddSingleton(PutNamedValue)
                     .AddSingleton(PutResourceInApim)
                     .AddTestActivitySource()
                     .AddNullLogger();
@@ -587,8 +661,10 @@ internal sealed class PutResourceTests
 
         public static Gen<Fixture> Generate() =>
             from dtoOption in Generator.JsonObject.OptionOf()
+            from isDryRun in Gen.Bool
             select new Fixture
             {
+                IsDryRun = () => isDryRun,
                 GetDto = async (_, _, _, _) =>
                 {
                     await ValueTask.CompletedTask;
@@ -599,6 +675,10 @@ internal sealed class PutResourceTests
                     await ValueTask.CompletedTask;
                 },
                 PutWorkspaceApi = async (_, _, _, _) =>
+                {
+                    await ValueTask.CompletedTask;
+                },
+                PutNamedValue = async (_, _, _) =>
                 {
                     await ValueTask.CompletedTask;
                 },
@@ -625,6 +705,7 @@ internal sealed class DeleteResourceTests
                   from fixture in Fixture.Generate()
                   select (resourceKey, deletedApis, deletedWorkspaceApis, deletedOthers, fixture with
                   {
+                      IsDryRun = () => false,
                       DeleteApi = async (name, _) =>
                       {
                           await ValueTask.CompletedTask;
@@ -633,12 +714,7 @@ internal sealed class DeleteResourceTests
                       DeleteWorkspaceApi = async (name, parentChain, _) =>
                       {
                           await ValueTask.CompletedTask;
-                          var resourceKey = new ResourceKey
-                          {
-                              Name = name,
-                              Parents = parentChain,
-                              Resource = WorkspaceApiResource.Instance
-                          };
+                          var resourceKey = ResourceKey.From(WorkspaceApiResource.Instance, name, parentChain);
                           deletedWorkspaceApis.Add(resourceKey);
                       },
                       DeleteResourceFromApim = async (resourceKey, _, _, _) =>
@@ -676,8 +752,50 @@ internal sealed class DeleteResourceTests
         });
     }
 
+    [Test]
+    public async Task Resources_are_not_deleted_in_dry_run()
+    {
+        var gen = from resourceKey in Generator.ResourceKey
+                  let deleteCalls = new ConcurrentBag<byte>()
+                  from fixture in Fixture.Generate()
+                  select (resourceKey, deleteCalls, fixture with
+                  {
+                      IsDryRun = () => true,
+                      DeleteApi = async (_, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          deleteCalls.Add(0);
+                      },
+                      DeleteWorkspaceApi = async (_, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          deleteCalls.Add(0);
+                      },
+                      DeleteResourceFromApim = async (_, _, _, _) =>
+                      {
+                          await ValueTask.CompletedTask;
+                          deleteCalls.Add(0);
+                      }
+                  });
+
+        await gen.SampleAsync(async tuple =>
+        {
+            // Arrange
+            var (resourceKey, deleteCalls, fixture) = tuple;
+            var deleteResource = fixture.Resolve();
+
+            // Act
+            await deleteResource(resourceKey, CancellationToken);
+
+            // Assert that no delete methods were called
+            await Assert.That(deleteCalls)
+                        .IsEmpty();
+        });
+    }
+
     private sealed record Fixture
     {
+        public required IsDryRun IsDryRun { get; init; }
         public required DeleteApi DeleteApi { get; init; }
         public required DeleteWorkspaceApi DeleteWorkspaceApi { get; init; }
         public required DeleteResourceFromApim DeleteResourceFromApim { get; init; }
@@ -686,7 +804,8 @@ internal sealed class DeleteResourceTests
         {
             var services = new ServiceCollection();
 
-            services.AddSingleton(DeleteApi)
+            services.AddSingleton(IsDryRun)
+                    .AddSingleton(DeleteApi)
                     .AddSingleton(DeleteWorkspaceApi)
                     .AddSingleton(DeleteResourceFromApim)
                     .AddTestActivitySource()
@@ -698,9 +817,10 @@ internal sealed class DeleteResourceTests
         }
 
         public static Gen<Fixture> Generate() =>
-            from dtoOption in Generator.JsonObject.OptionOf()
+            from isDryRun in Gen.Bool
             select new Fixture
             {
+                IsDryRun = () => isDryRun,
                 DeleteApi = async (_, _) =>
                 {
                     await ValueTask.CompletedTask;

@@ -1,3 +1,4 @@
+using common.tests;
 using CsCheck;
 using System;
 using System.Collections.Generic;
@@ -6,7 +7,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace common.tests;
+namespace common.unit.tests;
 
 internal sealed class ResourceGraphTests
 {
@@ -68,7 +69,7 @@ internal sealed class ResourceGraphTests
             await Assert.That(remaining).IsNotEmpty();
 
             // Assert that none of the remaining nodes are in sorted
-            await Assert.That(remaining).DoesNotIntersectWith(sorted);
+            await Assert.That(remaining.Intersect(sorted)).IsEmpty();
 
             // Assert that remaining + sorted = nodes
             await Assert.That(remaining.Concat(sorted)).IsEquivalentTo(nodes);
